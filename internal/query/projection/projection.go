@@ -2,6 +2,11 @@ package projection
 
 import (
 	"context"
+	"errors"
+	"fmt"
+
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/zitadel/logging"
 
 	internal_authz "github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/crypto"
@@ -86,6 +91,7 @@ var (
 )
 
 type projection interface {
+	ProjectionName() string
 	Start(ctx context.Context)
 	Init(ctx context.Context) error
 	Trigger(ctx context.Context, opts ...handler.TriggerOpt) (_ context.Context, err error)
@@ -94,6 +100,7 @@ type projection interface {
 
 var (
 	projections []projection
+	fields      []*handler.FieldHandler
 )
 
 func Create(ctx context.Context, sqlClient *database.DB, es handler.EventStore, config Config, keyEncryptionAlgorithm crypto.EncryptionAlgorithm, certEncryptionAlgorithm crypto.EncryptionAlgorithm, systemUsers map[string]*internal_authz.SystemAPIUser) error {
@@ -172,6 +179,7 @@ func Create(ctx context.Context, sqlClient *database.DB, es handler.EventStore, 
 	OrgDomainVerifiedFields = newFillOrgDomainVerifiedFields(applyCustomConfig(projectionConfig, config.Customizations[fieldsOrgDomainVerified]))
 
 	newProjectionsList()
+	newFieldsList()
 	return nil
 }
 
@@ -195,11 +203,41 @@ func Start(ctx context.Context) {
 }
 
 func ProjectInstance(ctx context.Context) error {
-	for _, projection := range projections {
-		_, err := projection.Trigger(ctx)
-		if err != nil {
-			return err
+	for i, projection := range projections {
+		logging.WithFields("name", projection.ProjectionName(), "instance", internal_authz.GetInstance(ctx).InstanceID(), "index", fmt.Sprintf("%d/%d", i, len(projections))).Info("starting projection")
+		for {
+			_, err := projection.Trigger(ctx)
+			if err == nil {
+				break
+			}
+			var pgErr *pgconn.PgError
+			errors.As(err, &pgErr)
+			if pgErr.Code != database.PgUniqueConstraintErrorCode {
+				return err
+			}
+			logging.WithFields("name", projection.ProjectionName(), "instance", internal_authz.GetInstance(ctx).InstanceID()).WithError(err).Debug("projection failed because of unique constraint, retrying")
 		}
+		logging.WithFields("name", projection.ProjectionName(), "instance", internal_authz.GetInstance(ctx).InstanceID(), "index", fmt.Sprintf("%d/%d", i, len(projections))).Info("projection done")
+	}
+	return nil
+}
+
+func ProjectInstanceFields(ctx context.Context) error {
+	for i, fieldProjection := range fields {
+		logging.WithFields("name", fieldProjection.ProjectionName(), "instance", internal_authz.GetInstance(ctx).InstanceID(), "index", fmt.Sprintf("%d/%d", i, len(fields))).Info("starting fields projection")
+		for {
+			err := fieldProjection.Trigger(ctx)
+			if err == nil {
+				break
+			}
+			var pgErr *pgconn.PgError
+			errors.As(err, &pgErr)
+			if pgErr.Code != database.PgUniqueConstraintErrorCode {
+				return err
+			}
+			logging.WithFields("name", fieldProjection.ProjectionName(), "instance", internal_authz.GetInstance(ctx).InstanceID()).WithError(err).Debug("fields projection failed because of unique constraint, retrying")
+		}
+		logging.WithFields("name", fieldProjection.ProjectionName(), "instance", internal_authz.GetInstance(ctx).InstanceID(), "index", fmt.Sprintf("%d/%d", i, len(fields))).Info("fields projection done")
 	}
 	return nil
 }
@@ -229,6 +267,17 @@ func applyCustomConfig(config handler.Config, customConfig CustomConfig) handler
 	}
 
 	return config
+}
+
+// we know this is ugly, but we need to have a singleton slice of all projections
+// and are only able to initialize it after all projections are created
+// as setup and start currently create them individually, we make sure we get the right one
+// will be refactored when changing to new id based projections
+func newFieldsList() {
+	fields = []*handler.FieldHandler{
+		ProjectGrantFields,
+		OrgDomainVerifiedFields,
+	}
 }
 
 // we know this is ugly, but we need to have a singleton slice of all projections

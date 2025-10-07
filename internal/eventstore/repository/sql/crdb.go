@@ -11,11 +11,11 @@ import (
 
 	"github.com/cockroachdb/cockroach-go/v2/crdb"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/shopspring/decimal"
 	"github.com/zitadel/logging"
 
 	"github.com/zitadel/zitadel/internal/api/authz"
 	"github.com/zitadel/zitadel/internal/database"
-	"github.com/zitadel/zitadel/internal/database/dialect"
 	"github.com/zitadel/zitadel/internal/eventstore"
 	"github.com/zitadel/zitadel/internal/eventstore/repository"
 	"github.com/zitadel/zitadel/internal/telemetry/tracing"
@@ -125,11 +125,11 @@ type CRDB struct {
 func NewCRDB(client *database.DB) *CRDB {
 	switch client.Type() {
 	case "cockroach":
-		awaitOpenTransactionsV1 = " AND creation_date::TIMESTAMP < (SELECT COALESCE(MIN(start), NOW())::TIMESTAMP FROM crdb_internal.cluster_transactions where application_name = '" + dialect.EventstorePusherAppName + "')"
-		awaitOpenTransactionsV2 = ` AND hlc_to_timestamp("position") < (SELECT COALESCE(MIN(start), NOW())::TIMESTAMP FROM crdb_internal.cluster_transactions where application_name = '` + dialect.EventstorePusherAppName + `')`
+		awaitOpenTransactionsV1 = " AND creation_date::TIMESTAMP < (SELECT COALESCE(MIN(start), NOW())::TIMESTAMP FROM crdb_internal.cluster_transactions where application_name = ANY(?))"
+		awaitOpenTransactionsV2 = ` AND hlc_to_timestamp("position") < (SELECT COALESCE(MIN(start), NOW())::TIMESTAMP FROM crdb_internal.cluster_transactions where application_name = ANY(?))`
 	case "postgres":
-		awaitOpenTransactionsV1 = ` AND EXTRACT(EPOCH FROM created_at) < (SELECT COALESCE(EXTRACT(EPOCH FROM min(xact_start)), EXTRACT(EPOCH FROM now())) FROM pg_stat_activity WHERE datname = current_database() AND application_name = '` + dialect.EventstorePusherAppName + `' AND state <> 'idle')`
-		awaitOpenTransactionsV2 = ` AND "position" < (SELECT COALESCE(EXTRACT(EPOCH FROM min(xact_start)), EXTRACT(EPOCH FROM now())) FROM pg_stat_activity WHERE datname = current_database() AND application_name = '` + dialect.EventstorePusherAppName + `' AND state <> 'idle')`
+		awaitOpenTransactionsV1 = ` AND EXTRACT(EPOCH FROM created_at) < (SELECT COALESCE(EXTRACT(EPOCH FROM min(xact_start)), EXTRACT(EPOCH FROM now())) FROM pg_stat_activity WHERE datname = current_database() AND application_name = ANY(?) AND state <> 'idle')`
+		awaitOpenTransactionsV2 = ` AND "position" < (SELECT COALESCE(EXTRACT(EPOCH FROM min(xact_start)), EXTRACT(EPOCH FROM now())) FROM pg_stat_activity WHERE datname = current_database() AND application_name = ANY(?) AND state <> 'idle')`
 	}
 
 	return &CRDB{client}
@@ -265,11 +265,11 @@ func (crdb *CRDB) FilterToReducer(ctx context.Context, searchQuery *eventstore.S
 	return err
 }
 
-// LatestSequence returns the latest sequence found by the search query
-func (db *CRDB) LatestSequence(ctx context.Context, searchQuery *eventstore.SearchQueryBuilder) (float64, error) {
-	var position sql.NullFloat64
+// LatestPosition returns the latest position found by the search query
+func (db *CRDB) LatestPosition(ctx context.Context, searchQuery *eventstore.SearchQueryBuilder) (decimal.Decimal, error) {
+	var position decimal.Decimal
 	err := query(ctx, db, searchQuery, &position, false)
-	return position.Float64, err
+	return position, err
 }
 
 // InstanceIDs returns the instance ids found by the search query
@@ -336,7 +336,7 @@ func (db *CRDB) eventQuery(useV1 bool) string {
 		" FROM eventstore.events2"
 }
 
-func (db *CRDB) maxSequenceQuery(useV1 bool) string {
+func (db *CRDB) maxPositionQuery(useV1 bool) string {
 	if useV1 {
 		return `SELECT event_sequence FROM eventstore.events`
 	}
@@ -414,6 +414,8 @@ func (db *CRDB) operation(operation repository.Operation) string {
 		return "="
 	case repository.OperationGreater:
 		return ">"
+	case repository.OperationGreaterOrEquals:
+		return ">="
 	case repository.OperationLess:
 		return "<"
 	case repository.OperationJSONContains:

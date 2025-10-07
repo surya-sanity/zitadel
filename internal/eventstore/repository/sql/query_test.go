@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/zitadel/zitadel/internal/database"
@@ -109,36 +110,36 @@ func Test_prepareColumns(t *testing.T) {
 		{
 			name: "max column",
 			args: args{
-				columns: eventstore.ColumnsMaxSequence,
-				dest:    new(sql.NullFloat64),
+				columns: eventstore.ColumnsMaxPosition,
+				dest:    new(decimal.Decimal),
 				useV1:   true,
 			},
 			res: res{
 				query:    `SELECT event_sequence FROM eventstore.events`,
-				expected: sql.NullFloat64{Float64: 43, Valid: true},
+				expected: decimal.NewFromInt(42),
 			},
 			fields: fields{
-				dbRow: []interface{}{sql.NullFloat64{Float64: 43, Valid: true}},
+				dbRow: []interface{}{decimal.NewNullDecimal(decimal.NewFromInt(42))},
 			},
 		},
 		{
 			name: "max column v2",
 			args: args{
-				columns: eventstore.ColumnsMaxSequence,
-				dest:    new(sql.NullFloat64),
+				columns: eventstore.ColumnsMaxPosition,
+				dest:    new(decimal.Decimal),
 			},
 			res: res{
 				query:    `SELECT "position" FROM eventstore.events2`,
-				expected: sql.NullFloat64{Float64: 43, Valid: true},
+				expected: decimal.NewFromInt(42),
 			},
 			fields: fields{
-				dbRow: []interface{}{sql.NullFloat64{Float64: 43, Valid: true}},
+				dbRow: []interface{}{decimal.NewNullDecimal(decimal.NewFromInt(42))},
 			},
 		},
 		{
 			name: "max sequence wrong dest type",
 			args: args{
-				columns: eventstore.ColumnsMaxSequence,
+				columns: eventstore.ColumnsMaxPosition,
 				dest:    new(uint64),
 			},
 			res: res{
@@ -178,11 +179,11 @@ func Test_prepareColumns(t *testing.T) {
 			res: res{
 				query: `SELECT created_at, event_type, "sequence", "position", payload, creator, "owner", instance_id, aggregate_type, aggregate_id, revision FROM eventstore.events2`,
 				expected: []eventstore.Event{
-					&repository.Event{AggregateID: "hodor", AggregateType: "user", Seq: 5, Pos: 42, Data: nil, Version: "v1"},
+					&repository.Event{AggregateID: "hodor", AggregateType: "user", Seq: 5, Pos: decimal.NewFromInt(42), Data: nil, Version: "v1"},
 				},
 			},
 			fields: fields{
-				dbRow: []interface{}{time.Time{}, eventstore.EventType(""), uint64(5), sql.NullFloat64{Float64: 42, Valid: true}, sql.RawBytes(nil), "", sql.NullString{}, "", eventstore.AggregateType("user"), "hodor", uint8(1)},
+				dbRow: []interface{}{time.Time{}, eventstore.EventType(""), uint64(5), decimal.NewNullDecimal(decimal.NewFromInt(42)), sql.RawBytes(nil), "", sql.NullString{}, "", eventstore.AggregateType("user"), "hodor", uint8(1)},
 			},
 		},
 		{
@@ -197,11 +198,11 @@ func Test_prepareColumns(t *testing.T) {
 			res: res{
 				query: `SELECT created_at, event_type, "sequence", "position", payload, creator, "owner", instance_id, aggregate_type, aggregate_id, revision FROM eventstore.events2`,
 				expected: []eventstore.Event{
-					&repository.Event{AggregateID: "hodor", AggregateType: "user", Seq: 5, Pos: 0, Data: nil, Version: "v1"},
+					&repository.Event{AggregateID: "hodor", AggregateType: "user", Seq: 5, Pos: decimal.Decimal{}, Data: nil, Version: "v1"},
 				},
 			},
 			fields: fields{
-				dbRow: []interface{}{time.Time{}, eventstore.EventType(""), uint64(5), sql.NullFloat64{Float64: 0, Valid: false}, sql.RawBytes(nil), "", sql.NullString{}, "", eventstore.AggregateType("user"), "hodor", uint8(1)},
+				dbRow: []interface{}{time.Time{}, eventstore.EventType(""), uint64(5), decimal.NullDecimal{}, sql.RawBytes(nil), "", sql.NullString{}, "", eventstore.AggregateType("user"), "hodor", uint8(1)},
 			},
 		},
 		{
@@ -402,8 +403,8 @@ func Test_prepareCondition(t *testing.T) {
 				useV1: true,
 			},
 			res: res{
-				clause: " WHERE aggregate_type = ANY(?) AND creation_date::TIMESTAMP < (SELECT COALESCE(MIN(start), NOW())::TIMESTAMP FROM crdb_internal.cluster_transactions where application_name = 'zitadel_es_pusher')",
-				values: []interface{}{[]eventstore.AggregateType{"user", "org"}},
+				clause: " WHERE aggregate_type = ANY(?) AND creation_date::TIMESTAMP < (SELECT COALESCE(MIN(start), NOW())::TIMESTAMP FROM crdb_internal.cluster_transactions where application_name = ANY(?))",
+				values: []interface{}{[]eventstore.AggregateType{"user", "org"}, database.TextArray[string]{}},
 			},
 		},
 		{
@@ -419,8 +420,8 @@ func Test_prepareCondition(t *testing.T) {
 				},
 			},
 			res: res{
-				clause: ` WHERE aggregate_type = ANY(?) AND hlc_to_timestamp("position") < (SELECT COALESCE(MIN(start), NOW())::TIMESTAMP FROM crdb_internal.cluster_transactions where application_name = 'zitadel_es_pusher')`,
-				values: []interface{}{[]eventstore.AggregateType{"user", "org"}},
+				clause: ` WHERE aggregate_type = ANY(?) AND hlc_to_timestamp("position") < (SELECT COALESCE(MIN(start), NOW())::TIMESTAMP FROM crdb_internal.cluster_transactions where application_name = ANY(?))`,
+				values: []interface{}{[]eventstore.AggregateType{"user", "org"}, database.TextArray[string]{}},
 			},
 		},
 		{
@@ -439,8 +440,8 @@ func Test_prepareCondition(t *testing.T) {
 				useV1: true,
 			},
 			res: res{
-				clause: " WHERE aggregate_type = ANY(?) AND aggregate_id = ? AND event_type = ANY(?) AND creation_date::TIMESTAMP < (SELECT COALESCE(MIN(start), NOW())::TIMESTAMP FROM crdb_internal.cluster_transactions where application_name = 'zitadel_es_pusher')",
-				values: []interface{}{[]eventstore.AggregateType{"user", "org"}, "1234", []eventstore.EventType{"user.created", "org.created"}},
+				clause: " WHERE aggregate_type = ANY(?) AND aggregate_id = ? AND event_type = ANY(?) AND creation_date::TIMESTAMP < (SELECT COALESCE(MIN(start), NOW())::TIMESTAMP FROM crdb_internal.cluster_transactions where application_name = ANY(?))",
+				values: []interface{}{[]eventstore.AggregateType{"user", "org"}, "1234", []eventstore.EventType{"user.created", "org.created"}, database.TextArray[string]{}},
 			},
 		},
 		{
@@ -458,8 +459,8 @@ func Test_prepareCondition(t *testing.T) {
 				},
 			},
 			res: res{
-				clause: ` WHERE aggregate_type = ANY(?) AND aggregate_id = ? AND event_type = ANY(?) AND hlc_to_timestamp("position") < (SELECT COALESCE(MIN(start), NOW())::TIMESTAMP FROM crdb_internal.cluster_transactions where application_name = 'zitadel_es_pusher')`,
-				values: []interface{}{[]eventstore.AggregateType{"user", "org"}, "1234", []eventstore.EventType{"user.created", "org.created"}},
+				clause: ` WHERE aggregate_type = ANY(?) AND aggregate_id = ? AND event_type = ANY(?) AND hlc_to_timestamp("position") < (SELECT COALESCE(MIN(start), NOW())::TIMESTAMP FROM crdb_internal.cluster_transactions where application_name = ANY(?))`,
+				values: []interface{}{[]eventstore.AggregateType{"user", "org"}, "1234", []eventstore.EventType{"user.created", "org.created"}, database.TextArray[string]{}},
 			},
 		},
 	}
@@ -687,8 +688,8 @@ func Test_query_events_mocked(t *testing.T) {
 			},
 			fields: fields{
 				mock: newMockClient(t).expectQuery(t,
-					`SELECT creation_date, event_type, event_sequence, event_data, editor_user, resource_owner, instance_id, aggregate_type, aggregate_id, aggregate_version FROM eventstore.events WHERE aggregate_type = \$1 AND creation_date::TIMESTAMP < \(SELECT COALESCE\(MIN\(start\), NOW\(\)\)::TIMESTAMP FROM crdb_internal\.cluster_transactions where application_name = 'zitadel_es_pusher'\) ORDER BY event_sequence DESC`,
-					[]driver.Value{eventstore.AggregateType("user")},
+					`SELECT creation_date, event_type, event_sequence, event_data, editor_user, resource_owner, instance_id, aggregate_type, aggregate_id, aggregate_version FROM eventstore.events WHERE aggregate_type = \$1 AND creation_date::TIMESTAMP < \(SELECT COALESCE\(MIN\(start\), NOW\(\)\)::TIMESTAMP FROM crdb_internal\.cluster_transactions where application_name = ANY\(\$2\)\) ORDER BY event_sequence DESC`,
+					[]driver.Value{eventstore.AggregateType("user"), database.TextArray[string]{}},
 				),
 			},
 			res: res{
@@ -709,8 +710,8 @@ func Test_query_events_mocked(t *testing.T) {
 			},
 			fields: fields{
 				mock: newMockClient(t).expectQuery(t,
-					`SELECT creation_date, event_type, event_sequence, event_data, editor_user, resource_owner, instance_id, aggregate_type, aggregate_id, aggregate_version FROM eventstore.events WHERE aggregate_type = \$1 AND creation_date::TIMESTAMP < \(SELECT COALESCE\(MIN\(start\), NOW\(\)\)::TIMESTAMP FROM crdb_internal\.cluster_transactions where application_name = 'zitadel_es_pusher'\) ORDER BY event_sequence LIMIT \$2`,
-					[]driver.Value{eventstore.AggregateType("user"), uint64(5)},
+					`SELECT creation_date, event_type, event_sequence, event_data, editor_user, resource_owner, instance_id, aggregate_type, aggregate_id, aggregate_version FROM eventstore.events WHERE aggregate_type = \$1 AND creation_date::TIMESTAMP < \(SELECT COALESCE\(MIN\(start\), NOW\(\)\)::TIMESTAMP FROM crdb_internal\.cluster_transactions where application_name = ANY\(\$2\)\) ORDER BY event_sequence LIMIT \$3`,
+					[]driver.Value{eventstore.AggregateType("user"), database.TextArray[string]{}, uint64(5)},
 				),
 			},
 			res: res{
@@ -731,8 +732,8 @@ func Test_query_events_mocked(t *testing.T) {
 			},
 			fields: fields{
 				mock: newMockClient(t).expectQuery(t,
-					`SELECT creation_date, event_type, event_sequence, event_data, editor_user, resource_owner, instance_id, aggregate_type, aggregate_id, aggregate_version FROM eventstore.events WHERE aggregate_type = \$1 AND creation_date::TIMESTAMP < \(SELECT COALESCE\(MIN\(start\), NOW\(\)\)::TIMESTAMP FROM crdb_internal\.cluster_transactions where application_name = 'zitadel_es_pusher'\) ORDER BY event_sequence DESC LIMIT \$2`,
-					[]driver.Value{eventstore.AggregateType("user"), uint64(5)},
+					`SELECT creation_date, event_type, event_sequence, event_data, editor_user, resource_owner, instance_id, aggregate_type, aggregate_id, aggregate_version FROM eventstore.events WHERE aggregate_type = \$1 AND creation_date::TIMESTAMP < \(SELECT COALESCE\(MIN\(start\), NOW\(\)\)::TIMESTAMP FROM crdb_internal\.cluster_transactions where application_name = ANY\(\$2\)\) ORDER BY event_sequence DESC LIMIT \$3`,
+					[]driver.Value{eventstore.AggregateType("user"), database.TextArray[string]{}, uint64(5)},
 				),
 			},
 			res: res{
@@ -754,8 +755,8 @@ func Test_query_events_mocked(t *testing.T) {
 			},
 			fields: fields{
 				mock: newMockClient(t).expectQuery(t,
-					`SELECT creation_date, event_type, event_sequence, event_data, editor_user, resource_owner, instance_id, aggregate_type, aggregate_id, aggregate_version FROM eventstore.events AS OF SYSTEM TIME '-1 ms' WHERE aggregate_type = \$1 AND creation_date::TIMESTAMP < \(SELECT COALESCE\(MIN\(start\), NOW\(\)\)::TIMESTAMP FROM crdb_internal\.cluster_transactions where application_name = 'zitadel_es_pusher'\) ORDER BY event_sequence DESC LIMIT \$2`,
-					[]driver.Value{eventstore.AggregateType("user"), uint64(5)},
+					`SELECT creation_date, event_type, event_sequence, event_data, editor_user, resource_owner, instance_id, aggregate_type, aggregate_id, aggregate_version FROM eventstore.events AS OF SYSTEM TIME '-1 ms' WHERE aggregate_type = \$1 AND creation_date::TIMESTAMP < \(SELECT COALESCE\(MIN\(start\), NOW\(\)\)::TIMESTAMP FROM crdb_internal\.cluster_transactions where application_name = ANY\(\$2\)\) ORDER BY event_sequence DESC LIMIT \$3`,
+					[]driver.Value{eventstore.AggregateType("user"), database.TextArray[string]{}, uint64(5)},
 				),
 			},
 			res: res{
@@ -776,8 +777,8 @@ func Test_query_events_mocked(t *testing.T) {
 			},
 			fields: fields{
 				mock: newMockClient(t).expectQueryErr(t,
-					`SELECT creation_date, event_type, event_sequence, event_data, editor_user, resource_owner, instance_id, aggregate_type, aggregate_id, aggregate_version FROM eventstore.events WHERE aggregate_type = \$1 AND creation_date::TIMESTAMP < \(SELECT COALESCE\(MIN\(start\), NOW\(\)\)::TIMESTAMP FROM crdb_internal\.cluster_transactions where application_name = 'zitadel_es_pusher'\) ORDER BY event_sequence DESC`,
-					[]driver.Value{eventstore.AggregateType("user")},
+					`SELECT creation_date, event_type, event_sequence, event_data, editor_user, resource_owner, instance_id, aggregate_type, aggregate_id, aggregate_version FROM eventstore.events WHERE aggregate_type = \$1 AND creation_date::TIMESTAMP < \(SELECT COALESCE\(MIN\(start\), NOW\(\)\)::TIMESTAMP FROM crdb_internal\.cluster_transactions where application_name = ANY\(\$2\)\) ORDER BY event_sequence DESC`,
+					[]driver.Value{eventstore.AggregateType("user"), database.TextArray[string]{}},
 					sql.ErrConnDone),
 			},
 			res: res{
@@ -798,8 +799,8 @@ func Test_query_events_mocked(t *testing.T) {
 			},
 			fields: fields{
 				mock: newMockClient(t).expectQueryScanErr(t,
-					`SELECT creation_date, event_type, event_sequence, event_data, editor_user, resource_owner, instance_id, aggregate_type, aggregate_id, aggregate_version FROM eventstore.events WHERE aggregate_type = \$1 AND creation_date::TIMESTAMP < \(SELECT COALESCE\(MIN\(start\), NOW\(\)\)::TIMESTAMP FROM crdb_internal\.cluster_transactions where application_name = 'zitadel_es_pusher'\) ORDER BY event_sequence DESC`,
-					[]driver.Value{eventstore.AggregateType("user")},
+					`SELECT creation_date, event_type, event_sequence, event_data, editor_user, resource_owner, instance_id, aggregate_type, aggregate_id, aggregate_version FROM eventstore.events WHERE aggregate_type = \$1 AND creation_date::TIMESTAMP < \(SELECT COALESCE\(MIN\(start\), NOW\(\)\)::TIMESTAMP FROM crdb_internal\.cluster_transactions where application_name = ANY\(\$2\)\) ORDER BY event_sequence DESC`,
+					[]driver.Value{eventstore.AggregateType("user"), database.TextArray[string]{}},
 					&repository.Event{Seq: 100}),
 			},
 			res: res{
@@ -832,8 +833,8 @@ func Test_query_events_mocked(t *testing.T) {
 			},
 			fields: fields{
 				mock: newMockClient(t).expectQuery(t,
-					`SELECT creation_date, event_type, event_sequence, event_data, editor_user, resource_owner, instance_id, aggregate_type, aggregate_id, aggregate_version FROM eventstore.events WHERE \(aggregate_type = \$1 OR \(aggregate_type = \$2 AND aggregate_id = \$3\)\) AND creation_date::TIMESTAMP < \(SELECT COALESCE\(MIN\(start\), NOW\(\)\)::TIMESTAMP FROM crdb_internal\.cluster_transactions where application_name = 'zitadel_es_pusher'\) ORDER BY event_sequence DESC LIMIT \$4`,
-					[]driver.Value{eventstore.AggregateType("user"), eventstore.AggregateType("org"), "asdf42", uint64(5)},
+					`SELECT creation_date, event_type, event_sequence, event_data, editor_user, resource_owner, instance_id, aggregate_type, aggregate_id, aggregate_version FROM eventstore.events WHERE \(aggregate_type = \$1 OR \(aggregate_type = \$2 AND aggregate_id = \$3\)\) AND creation_date::TIMESTAMP < \(SELECT COALESCE\(MIN\(start\), NOW\(\)\)::TIMESTAMP FROM crdb_internal\.cluster_transactions where application_name = ANY\(\$4\)\) ORDER BY event_sequence DESC LIMIT \$5`,
+					[]driver.Value{eventstore.AggregateType("user"), eventstore.AggregateType("org"), "asdf42", database.TextArray[string]{}, uint64(5)},
 				),
 			},
 			res: res{
